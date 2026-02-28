@@ -4,9 +4,259 @@ jobs:
   build:
     runs-on: windows-11-arm
     steps:
-    - uses: actions/checkout@v2
-    - name: Setup upterm session
-      uses: owenthereal/action-upterm@v1
-      with:
-        limit-access-to-actor: true # Restrict to the user who triggered the workflow
-        limit-access-to-users: githubuser1,githubuser2 # Specific authorized users only
+      - name: check env
+        shell: pwsh
+        run: |
+          #Requires -Version 5.1
+          <#
+          .SYNOPSIS
+              GitHub Actions Windows Runner 环境诊断脚本
+          .DESCRIPTION
+              检查 Visual Studio、C++ 工具链、CMake、Ninja、硬件配置等信息
+          #>
+          
+          $ErrorActionPreference = 'Continue'
+          $separator = "=" * 70
+          
+          function Write-Section($title) {
+              Write-Host "`n$separator" -ForegroundColor Cyan
+              Write-Host " $title" -ForegroundColor Cyan
+              Write-Host "$separator" -ForegroundColor Cyan
+          }
+          
+          # ============================================================
+          #  1. 操作系统 & 硬件
+          # ============================================================
+          Write-Section "操作系统 & 硬件配置"
+          
+          $os = Get-CimInstance Win32_OperatingSystem
+          $cpu = Get-CimInstance Win32_Processor
+          $mem = Get-CimInstance Win32_PhysicalMemory | Measure-Object Capacity -Sum
+          $disk = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+          
+          Write-Host "`n[OS]"
+          Write-Host "  系统名称   : $($os.Caption) ($($os.OSArchitecture))"
+          Write-Host "  版本号     : $($os.Version) (Build $($os.BuildNumber))"
+          Write-Host "  计算机名   : $env:COMPUTERNAME"
+          
+          Write-Host "`n[CPU]"
+          Write-Host "  型号       : $($cpu.Name)"
+          Write-Host "  核心/线程  : $($cpu.NumberOfCores) 核 / $($cpu.NumberOfLogicalProcessors) 线程"
+          Write-Host "  最大频率   : $($cpu.MaxClockSpeed) MHz"
+          Write-Host "  架构       : $(switch($cpu.Architecture){ 0{'x86'} 5{'ARM'} 9{'x64'} 12{'ARM64'} default{$cpu.Architecture} })"
+          
+          Write-Host "`n[内存]"
+          $totalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+          $freeGB  = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
+          Write-Host "  总内存     : ${totalGB} GB"
+          Write-Host "  可用内存   : ${freeGB} GB"
+          
+          Write-Host "`n[磁盘]"
+          foreach ($d in $disk) {
+              $sizeGB = [math]::Round($d.Size / 1GB, 1)
+              $freeGB = [math]::Round($d.FreeSpace / 1GB, 1)
+              Write-Host "  $($d.DeviceID)  总计 ${sizeGB} GB / 可用 ${freeGB} GB"
+          }
+          
+          # ============================================================
+          #  2. Visual Studio 安装情况
+          # ============================================================
+          Write-Section "Visual Studio 安装情况"
+          
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          
+          if (Test-Path $vswhere) {
+              $instances = & $vswhere -all -format json | ConvertFrom-Json
+          
+              if ($instances.Count -eq 0) {
+                  Write-Host "  未检测到任何 Visual Studio 实例" -ForegroundColor Yellow
+              }
+          
+              foreach ($inst in $instances) {
+                  Write-Host "`n  [$($inst.displayName)]"
+                  Write-Host "  版本       : $($inst.installationVersion)"
+                  Write-Host "  安装路径   : $($inst.installationPath)"
+                  Write-Host "  渠道       : $($inst.channelId)"
+                  Write-Host "  状态       : $($inst.state)"
+          
+                  # 列出已安装的关键 workload / component
+                  $components = & $vswhere -path $inst.installationPath `
+                                  -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                                  -format json 2>$null | ConvertFrom-Json
+                  if ($components) {
+                      Write-Host "  C++ x64/x86: ✅ 已安装" -ForegroundColor Green
+                  } else {
+                      Write-Host "  C++ x64/x86: ❌ 未安装" -ForegroundColor Red
+                  }
+          
+                  $componentsARM64 = & $vswhere -path $inst.installationPath `
+                                  -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
+                                  -format json 2>$null | ConvertFrom-Json
+                  if ($componentsARM64) {
+                      Write-Host "  C++ ARM64  : ✅ 已安装" -ForegroundColor Green
+                  } else {
+                      Write-Host "  C++ ARM64  : ❌ 未安装" -ForegroundColor Yellow
+                  }
+          
+                  # MSVC 工具集版本
+                  $vcToolsDir = Join-Path $inst.installationPath "VC\Tools\MSVC"
+                  if (Test-Path $vcToolsDir) {
+                      $versions = Get-ChildItem $vcToolsDir -Directory | Sort-Object Name -Descending
+                      Write-Host "  MSVC 版本  : $($versions.Name -join ', ')"
+                  }
+          
+                  # Windows SDK
+                  $sdkDir = "${env:ProgramFiles(x86)}\Windows Kits\10\Include"
+                  if (Test-Path $sdkDir) {
+                      $sdkVersions = Get-ChildItem $sdkDir -Directory |
+                                     Where-Object { $_.Name -match '^\d+\.' } |
+                                     Sort-Object Name -Descending
+                      Write-Host "  Windows SDK: $($sdkVersions.Name -join ', ')"
+                  }
+              }
+          } else {
+              Write-Host "  vswhere.exe 未找到，可能未安装 Visual Studio" -ForegroundColor Red
+          }
+          
+          # ============================================================
+          #  3. MSVC 编译器 (cl.exe) 检测
+          # ============================================================
+          Write-Section "MSVC 编译器 (cl.exe)"
+          
+          # 尝试在当前环境中找 cl.exe
+          $clPath = Get-Command cl.exe -ErrorAction SilentlyContinue
+          if ($clPath) {
+              Write-Host "  路径: $($clPath.Source)"
+              & cl.exe 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "  $_" }
+          } else {
+              Write-Host "  当前 PATH 中未找到 cl.exe（需通过 vsdevcmd 或 vcvarsall 激活）" -ForegroundColor Yellow
+          
+              # 尝试找到 vcvarsall.bat 的位置
+              if (Test-Path $vswhere) {
+                  $installPath = & $vswhere -latest -property installationPath
+                  $vcvarsall = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
+                  if (Test-Path $vcvarsall) {
+                      Write-Host "  vcvarsall.bat: $vcvarsall"
+                      Write-Host "  激活示例: cmd /c `"$vcvarsall`" amd64 `"&&`" cl.exe" -ForegroundColor DarkGray
+                  }
+              }
+          }
+          
+          # ============================================================
+          #  4. CMake
+          # ============================================================
+          Write-Section "CMake"
+          
+          $cmakePath = Get-Command cmake -ErrorAction SilentlyContinue
+          if ($cmakePath) {
+              Write-Host "  路径    : $($cmakePath.Source)"
+              $cmakeVer = & cmake --version | Select-Object -First 1
+              Write-Host "  版本    : $cmakeVer"
+              Write-Host "  可用生成器:"
+              & cmake --help 2>$null | Select-String "^\s+\*?\s*(Visual Studio|Ninja|NMake|MinGW|Unix)" |
+                  ForEach-Object { Write-Host "    $($_.Line.Trim())" }
+          } else {
+              Write-Host "  ❌ 未安装 CMake" -ForegroundColor Red
+          }
+          
+          # ============================================================
+          #  5. Ninja
+          # ============================================================
+          Write-Section "Ninja"
+          
+          $ninjaPath = Get-Command ninja -ErrorAction SilentlyContinue
+          if ($ninjaPath) {
+              Write-Host "  路径    : $($ninjaPath.Source)"
+              Write-Host "  版本    : $(& ninja --version)"
+          } else {
+              Write-Host "  ❌ 未安装 Ninja" -ForegroundColor Red
+          
+              # 检查 VS 内置的 ninja
+              if (Test-Path $vswhere) {
+                  $installPath = & $vswhere -latest -property installationPath
+                  $vsNinja = Join-Path $installPath "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
+                  if (Test-Path $vsNinja) {
+                      Write-Host "  但 VS 内置了 Ninja: $vsNinja" -ForegroundColor Yellow
+                      Write-Host "  版本: $(& $vsNinja --version)"
+                  }
+              }
+          }
+          
+          # ============================================================
+          #  6. 其他常用工具
+          # ============================================================
+          Write-Section "其他工具链 & 实用程序"
+          
+          $tools = @(
+              @{ Name = "git";         Cmd = "git --version" },
+              @{ Name = "python";      Cmd = "python --version" },
+              @{ Name = "python3";     Cmd = "python3 --version" },
+              @{ Name = "clang";       Cmd = "clang --version" },
+              @{ Name = "clang-cl";    Cmd = "clang-cl --version" },
+              @{ Name = "gcc";         Cmd = "gcc --version" },
+              @{ Name = "rustc";       Cmd = "rustc --version" },
+              @{ Name = "node";        Cmd = "node --version" },
+              @{ Name = "msbuild";     Cmd = "msbuild -version -nologo" },
+              @{ Name = "pkg-config";  Cmd = "pkg-config --version" },
+              @{ Name = "nasm";        Cmd = "nasm -v" },
+              @{ Name = "7z";          Cmd = "7z" }
+          )
+          
+          foreach ($tool in $tools) {
+              $exe = Get-Command $tool.Name -ErrorAction SilentlyContinue
+              if ($exe) {
+                  try {
+                      $ver = (Invoke-Expression $tool.Cmd 2>&1) | Select-Object -First 1
+                      Write-Host ("  {0,-12} : ✅  {1}" -f $tool.Name, $ver)
+                  } catch {
+                      Write-Host ("  {0,-12} : ✅  (路径: {1})" -f $tool.Name, $exe.Source)
+                  }
+              } else {
+                  Write-Host ("  {0,-12} : --  未安装" -f $tool.Name) -ForegroundColor DarkGray
+              }
+          }
+          
+          # ============================================================
+          #  7. 环境变量（关键项）
+          # ============================================================
+          Write-Section "关键环境变量"
+          
+          $envVars = @(
+              "RUNNER_OS", "RUNNER_ARCH", "RUNNER_TEMP", "RUNNER_TOOL_CACHE",
+              "ImageOS", "ImageVersion",
+              "VCPKG_INSTALLATION_ROOT",
+              "GITHUB_WORKSPACE", "GITHUB_PATH",
+              "PATH"
+          )
+          
+          foreach ($var in $envVars) {
+              $val = [Environment]::GetEnvironmentVariable($var)
+              if ($val) {
+                  if ($var -eq "PATH") {
+                      Write-Host "`n  PATH (分条列出):"
+                      $val -split ';' | Where-Object { $_ } | ForEach-Object { Write-Host "    $_" }
+                  } else {
+                      Write-Host ("  {0,-25} : {1}" -f $var, $val)
+                  }
+              } else {
+                  Write-Host ("  {0,-25} : (未设置)" -f $var) -ForegroundColor DarkGray
+              }
+          }
+          
+          # ============================================================
+          #  8. vcpkg
+          # ============================================================
+          Write-Section "vcpkg"
+          
+          if ($env:VCPKG_INSTALLATION_ROOT -and (Test-Path "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe")) {
+              Write-Host "  路径    : $env:VCPKG_INSTALLATION_ROOT"
+              $vcpkgVer = & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" version 2>&1 | Select-Object -First 2
+              $vcpkgVer | ForEach-Object { Write-Host "  $_" }
+          } else {
+              Write-Host "  ❌ vcpkg 未找到" -ForegroundColor Red
+          }
+          
+          # ============================================================
+          Write-Host "`n$separator" -ForegroundColor Cyan
+          Write-Host " 诊断完成  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
+          Write-Host "$separator`n" -ForegroundColor Cyan
