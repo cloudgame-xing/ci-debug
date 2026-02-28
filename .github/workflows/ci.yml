@@ -66,54 +66,7 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           
           if (Test-Path $vswhere) {
-              $instances = & $vswhere -all -format json | ConvertFrom-Json
-          
-              if ($instances.Count -eq 0) {
-                  Write-Host "  未检测到任何 Visual Studio 实例" -ForegroundColor Yellow
-              }
-          
-              foreach ($inst in $instances) {
-                  Write-Host "`n  [$($inst.displayName)]"
-                  Write-Host "  版本       : $($inst.installationVersion)"
-                  Write-Host "  安装路径   : $($inst.installationPath)"
-                  Write-Host "  渠道       : $($inst.channelId)"
-                  Write-Host "  状态       : $($inst.state)"
-          
-                  # 列出已安装的关键 workload / component
-                  $components = & $vswhere -path $inst.installationPath `
-                                  -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-                                  -format json 2>$null | ConvertFrom-Json
-                  if ($components) {
-                      Write-Host "  C++ x64/x86: ✅ 已安装" -ForegroundColor Green
-                  } else {
-                      Write-Host "  C++ x64/x86: ❌ 未安装" -ForegroundColor Red
-                  }
-          
-                  $componentsARM64 = & $vswhere -path $inst.installationPath `
-                                  -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
-                                  -format json 2>$null | ConvertFrom-Json
-                  if ($componentsARM64) {
-                      Write-Host "  C++ ARM64  : ✅ 已安装" -ForegroundColor Green
-                  } else {
-                      Write-Host "  C++ ARM64  : ❌ 未安装" -ForegroundColor Yellow
-                  }
-          
-                  # MSVC 工具集版本
-                  $vcToolsDir = Join-Path $inst.installationPath "VC\Tools\MSVC"
-                  if (Test-Path $vcToolsDir) {
-                      $versions = Get-ChildItem $vcToolsDir -Directory | Sort-Object Name -Descending
-                      Write-Host "  MSVC 版本  : $($versions.Name -join ', ')"
-                  }
-          
-                  # Windows SDK
-                  $sdkDir = "${env:ProgramFiles(x86)}\Windows Kits\10\Include"
-                  if (Test-Path $sdkDir) {
-                      $sdkVersions = Get-ChildItem $sdkDir -Directory |
-                                     Where-Object { $_.Name -match '^\d+\.' } |
-                                     Sort-Object Name -Descending
-                      Write-Host "  Windows SDK: $($sdkVersions.Name -join ', ')"
-                  }
-              }
+              $vswhere -all
           } else {
               Write-Host "  vswhere.exe 未找到，可能未安装 Visual Studio" -ForegroundColor Red
           }
