@@ -4,10 +4,13 @@ jobs:
   build:
     runs-on: windows-11-arm
     steps:
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: main
+          cache: true
+          
       - name: check env
         shell: pwsh
         run: |
-          git clone https://github.com/flutter/flutter.git
-          $env:PATH = "$(Join-Path $PWD 'flutter\bin');$env:PATH"
-          flutter channel main
           flutter doctor
