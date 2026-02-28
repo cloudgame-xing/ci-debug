@@ -7,5 +7,7 @@ jobs:
       - name: check env
         shell: pwsh
         run: |
-          cd "C:\Program Files\Microsoft Visual Studio\"
-          Get-ChildItem -Recurse -Depth 100 -Name
+          git clone https://github.com/flutter/flutter.git
+          $env:PATH = "$(Join-Path $PWD 'flutter\bin');$env:PATH"
+          flutter channel main
+          flutter doctor
